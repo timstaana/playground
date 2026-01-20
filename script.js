@@ -43,13 +43,66 @@ const touchInput = {
 
 const colliders = [];
 const levelUrl = 'level.json';
-const showTouchDebug = true;
+const showTouchDebug = false;
+const showJoystick = true;
+const SHADOW_ALPHA = 130;
+const SPAWN_POINT = { x: 0, y: 0, z: 160 };
 let debugLayer = null;
 let mainCanvas = null;
+let editorOverlay = null;
+const editor = {
+  active: false,
+  selection: null,
+  hover: null,
+  defaults: {
+    w: 120,
+    d: 120,
+    h: 40,
+    color: [90, 70, 40],
+  },
+  camera: {
+    yaw: Math.PI * 0.25,
+    pitch: 0.6,
+    distance: 620,
+    target: { x: 0, y: 0, z: 40 },
+    fov: Math.PI / 3,
+    position: { x: 0, y: 0, z: 0 },
+  },
+  drag: {
+    active: false,
+    mode: null,
+    startX: 0,
+    startY: 0,
+    startYaw: 0,
+    startPitch: 0,
+    startTarget: { x: 0, y: 0, z: 0 },
+    offset: { x: 0, y: 0, z: 0 },
+    planeZ: 0,
+    resizeAxis: null,
+    resizeSign: 1,
+    startBounds: null,
+  },
+  grid: {
+    size: 1200,
+    step: 40,
+  },
+  handles: {
+    size: 18,
+    offset: 8,
+  },
+};
 
 async function setup() {
   mainCanvas = createCanvas(windowWidth, windowHeight, WEBGL);
-  if (showTouchDebug) {
+
+  font = await loadFont('opensans.ttf');
+  textFont(font);
+
+
+  if (mainCanvas?.elt) {
+    mainCanvas.elt.addEventListener('contextmenu', (event) => event.preventDefault());
+  }
+  if (showTouchDebug || showJoystick) {
     debugLayer = createGraphics(windowWidth, windowHeight);
     debugLayer.pixelDensity(pixelDensity());
     const debugCanvas = debugLayer.elt;
@@ -62,24 +115,40 @@ async function setup() {
     const parent = mainCanvas.elt.parentNode || document.body;
     parent.appendChild(debugCanvas);
   }
+  if (!editorOverlay) {
+    editorOverlay = createGraphics(windowWidth, windowHeight);
+    editorOverlay.pixelDensity(pixelDensity());
+    const overlayCanvas = editorOverlay.elt;
+    overlayCanvas.style.position = 'absolute';
+    overlayCanvas.style.left = '0';
+    overlayCanvas.style.top = '0';
+    overlayCanvas.style.display = 'block';
+    overlayCanvas.style.pointerEvents = 'none';
+    overlayCanvas.style.zIndex = '9';
+    const parent = mainCanvas.elt.parentNode || document.body;
+    parent.appendChild(overlayCanvas);
+  }
   setupTouchEvents();
-  player.pos.x = 0;
-  player.pos.y = 0;
-  player.pos.z = 0;
-  player.vel.z = 0;
-  player.onGround = true;
+  resetPlayerToSpawn();
   loadLevel();
 }
 
 function draw() {
   background(18);
-  updatePlayer();
-  updateCamera();
-  drawPlatforms();
-  drawShadow();
-  drawPlatformShadows();
-  drawPlayer();
-  if (showTouchDebug) drawTouchDebug();
+  perspective(editor.camera.fov, width / height, 1, 5000);
+
+  if (editor.active) {
+    updateEditor();
+  } else {
+    if (editorOverlay) editorOverlay.clear();
+    updatePlayer();
+    updateCamera();
+    drawPlatforms();
+    drawShadow();
+    drawPlatformShadows();
+    drawPlayer();
+  }
+  if ((showTouchDebug || showJoystick) && !editor.active) drawTouchOverlay();
 }
 
 function windowResized() {
@@ -90,6 +159,397 @@ function windowResized() {
     debugLayer.elt.style.width = `${windowWidth}px`;
     debugLayer.elt.style.height = `${windowHeight}px`;
   }
+  if (editorOverlay) {
+    editorOverlay.resizeCanvas(windowWidth, windowHeight);
+    editorOverlay.pixelDensity(pixelDensity());
+    editorOverlay.elt.style.width = `${windowWidth}px`;
+    editorOverlay.elt.style.height = `${windowHeight}px`;
+  }
+}
+
+function setEditorActive(active) {
+  editor.active = active;
+  editor.drag.active = false;
+  editor.drag.mode = null;
+  editor.drag.resizeAxis = null;
+  editor.drag.resizeSign = 1;
+  editor.drag.startBounds = null;
+  editor.hover = null;
+  if (active) {
+    endDrag();
+  }
+}
+
+function updateEditor() {
+  updateEditorCamera();
+  updateEditorHover();
+  drawEditorGrid();
+  drawPlatforms();
+  drawShadow();
+  drawPlatformShadows();
+  drawPlayer();
+  drawEditorSelection();
+  drawEditorOverlay();
+}
+
+function updateEditorCamera() {
+  const position = getEditorCameraPosition();
+  editor.camera.position = position;
+  camera(
+    position.x,
+    position.y,
+    position.z,
+    editor.camera.target.x,
+    editor.camera.target.y,
+    editor.camera.target.z,
+    0,
+    0,
+    -1
+  );
+}
+
+function getEditorCameraPosition() {
+  const { yaw, pitch, distance, target } = editor.camera;
+  const cosPitch = Math.cos(pitch);
+  return {
+    x: target.x + Math.cos(yaw) * cosPitch * distance,
+    y: target.y + Math.sin(yaw) * cosPitch * distance,
+    z: target.z + Math.sin(pitch) * distance,
+  };
+}
+
+function getEditorRay(screenX, screenY) {
+  const position = getEditorCameraPosition();
+  editor.camera.position = position;
+  const target = editor.camera.target;
+  const up = createVector(0, 0, -1);
+  const forward = createVector(
+    target.x - position.x,
+    target.y - position.y,
+    target.z - position.z
+  ).normalize();
+  const right = p5.Vector.cross(forward, up).normalize();
+  const trueUp = p5.Vector.cross(right, forward).normalize();
+
+  const ndcX = (screenX / width) * 2 - 1;
+  const ndcY = (screenY / height) * 2 - 1;
+  const aspect = width / height;
+  const tanFov = Math.tan(editor.camera.fov * 0.5);
+
+  const rayDir = createVector(0, 0, 0);
+  rayDir.add(p5.Vector.mult(right, ndcX * tanFov * aspect));
+  rayDir.add(p5.Vector.mult(trueUp, ndcY * tanFov));
+  rayDir.add(forward);
+  rayDir.normalize();
+
+  return { origin: position, dir: rayDir };
+}
+
+function updateEditorHover() {
+  if (editor.drag.active) return;
+  const ray = getEditorRay(mouseX, mouseY);
+  const hit = pickPlatform(ray);
+  editor.hover = hit ? hit.collider : null;
+}
+
+function drawEditorGrid() {
+  const size = editor.grid.size;
+  const step = editor.grid.step;
+  push();
+  stroke(200, 200, 220, 70);
+  strokeWeight(1);
+  for (let x = -size; x <= size; x += step) {
+    line(x, -size, 0, x, size, 0);
+  }
+  for (let y = -size; y <= size; y += step) {
+    line(-size, y, 0, size, y, 0);
+  }
+  stroke(200, 80, 80, 180);
+  line(-size, 0, 0, size, 0, 0);
+  stroke(80, 200, 120, 180);
+  line(0, -size, 0, 0, size, 0);
+  pop();
+}
+
+function drawEditorSelection() {
+  if (editor.hover && editor.hover !== editor.selection) {
+    drawPlatformOutline(editor.hover, [100, 180, 255, 160], 1.5);
+  }
+  if (editor.selection) {
+    drawPlatformOutline(editor.selection, [255, 220, 120, 220], 2.5);
+    drawResizeHandles(editor.selection);
+  }
+}
+
+function drawPlatformOutline(platform, color, weight) {
+  push();
+  noFill();
+  stroke(color[0], color[1], color[2], color[3]);
+  strokeWeight(weight);
+  translate(platform.center.x, platform.center.y, platform.center.z);
+  box(platform.size.x, platform.size.y, platform.size.z);
+  pop();
+}
+
+function getResizeHandles(platform) {
+  const halfX = platform.size.x * 0.5;
+  const halfY = platform.size.y * 0.5;
+  const size = editor.handles.size;
+  const offset = editor.handles.offset;
+
+  return [
+    {
+      axis: 'x',
+      sign: 1,
+      center: {
+        x: platform.center.x + halfX + offset,
+        y: platform.center.y,
+        z: platform.center.z,
+      },
+      size: { x: size, y: size, z: size },
+    },
+    {
+      axis: 'x',
+      sign: -1,
+      center: {
+        x: platform.center.x - halfX - offset,
+        y: platform.center.y,
+        z: platform.center.z,
+      },
+      size: { x: size, y: size, z: size },
+    },
+    {
+      axis: 'y',
+      sign: 1,
+      center: {
+        x: platform.center.x,
+        y: platform.center.y + halfY + offset,
+        z: platform.center.z,
+      },
+      size: { x: size, y: size, z: size },
+    },
+    {
+      axis: 'y',
+      sign: -1,
+      center: {
+        x: platform.center.x,
+        y: platform.center.y - halfY - offset,
+        z: platform.center.z,
+      },
+      size: { x: size, y: size, z: size },
+    },
+  ];
+}
+
+function drawResizeHandles(platform) {
+  const handles = getResizeHandles(platform);
+  for (const handle of handles) {
+    push();
+    noStroke();
+    const isHot =
+      editor.drag.mode === 'resize' &&
+      editor.drag.resizeAxis === handle.axis &&
+      editor.drag.resizeSign === handle.sign;
+    if (isHot) {
+      fill(255, 200, 120, 220);
+    } else {
+      fill(120, 200, 255, 200);
+    }
+    translate(handle.center.x, handle.center.y, handle.center.z);
+    box(handle.size.x, handle.size.y, handle.size.z);
+    pop();
+  }
+}
+
+function pickResizeHandle(ray, platform) {
+  const handles = getResizeHandles(platform);
+  let closest = null;
+  let closestT = Infinity;
+
+  for (const handle of handles) {
+    const halfX = handle.size.x * 0.5;
+    const halfY = handle.size.y * 0.5;
+    const halfZ = handle.size.z * 0.5;
+    const min = {
+      x: handle.center.x - halfX,
+      y: handle.center.y - halfY,
+      z: handle.center.z - halfZ,
+    };
+    const max = {
+      x: handle.center.x + halfX,
+      y: handle.center.y + halfY,
+      z: handle.center.z + halfZ,
+    };
+    const t = rayAabbIntersection(ray, min, max);
+    if (t === null || t >= closestT) continue;
+    closestT = t;
+    closest = handle;
+  }
+
+  return closest;
+}
+
+function drawEditorOverlay() {
+  if (!editorOverlay) return;
+  editorOverlay.clear();
+  editorOverlay.noStroke();
+  editorOverlay.rectMode(CORNER);
+  editorOverlay.fill(10, 10, 10, 160);
+  editorOverlay.textSize(12);
+  editorOverlay.textLeading(16);
+  const lines = [
+    'Edit mode (E):',
+    'Left click add/select, drag to move',
+    'Drag side handles to resize',
+    'Right drag orbit, middle drag pan',
+    'Wheel zoom, Shift+wheel move Z, Alt+wheel height',
+    'Ctrl/Cmd+wheel footprint size',
+    'Delete/Backspace or X removes selected',
+    'Press P to export level.json',
+  ];
+  const boxHeight = 24 + lines.length * 16;
+  editorOverlay.rect(12, 12, 320, boxHeight, 6);
+  editorOverlay.fill(255);
+  editorOverlay.text(lines.join('\n'), 22, 30);
+}
+
+function rayPlaneIntersection(ray, planeZ) {
+  const denom = ray.dir.z;
+  if (Math.abs(denom) < 0.0001) return null;
+  const t = (planeZ - ray.origin.z) / denom;
+  if (t < 0) return null;
+  return {
+    x: ray.origin.x + ray.dir.x * t,
+    y: ray.origin.y + ray.dir.y * t,
+    z: planeZ,
+  };
+}
+
+function rayAabbIntersection(ray, min, max) {
+  let tMin = -Infinity;
+  let tMax = Infinity;
+
+  const axes = ['x', 'y', 'z'];
+  for (const axis of axes) {
+    const origin = ray.origin[axis];
+    const dir = ray.dir[axis];
+    if (Math.abs(dir) < 0.0001) {
+      if (origin < min[axis] || origin > max[axis]) return null;
+      continue;
+    }
+    const t1 = (min[axis] - origin) / dir;
+    const t2 = (max[axis] - origin) / dir;
+    const near = Math.min(t1, t2);
+    const far = Math.max(t1, t2);
+    tMin = Math.max(tMin, near);
+    tMax = Math.min(tMax, far);
+    if (tMin > tMax) return null;
+  }
+
+  if (tMax < 0) return null;
+  return tMin >= 0 ? tMin : tMax;
+}
+
+function pickPlatform(ray) {
+  let closest = null;
+  let closestT = Infinity;
+  let hitPoint = null;
+
+  for (const collider of colliders) {
+    if (collider.type !== 'box') continue;
+    const halfX = collider.size.x * 0.5;
+    const halfY = collider.size.y * 0.5;
+    const halfZ = collider.size.z * 0.5;
+    const min = {
+      x: collider.center.x - halfX,
+      y: collider.center.y - halfY,
+      z: collider.center.z - halfZ,
+    };
+    const max = {
+      x: collider.center.x + halfX,
+      y: collider.center.y + halfY,
+      z: collider.center.z + halfZ,
+    };
+    const t = rayAabbIntersection(ray, min, max);
+    if (t === null || t >= closestT) continue;
+    closestT = t;
+    closest = collider;
+    hitPoint = {
+      x: ray.origin.x + ray.dir.x * t,
+      y: ray.origin.y + ray.dir.y * t,
+      z: ray.origin.z + ray.dir.z * t,
+    };
+  }
+
+  if (!closest) return null;
+  return { collider: closest, point: hitPoint, t: closestT };
+}
+
+function clampValue(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function resetPlayerToSpawn() {
+  player.pos.x = SPAWN_POINT.x;
+  player.pos.y = SPAWN_POINT.y;
+  player.pos.z = SPAWN_POINT.z;
+  player.vel.z = 0;
+  player.onGround = false;
+  player.jumping = false;
+  player.jumpHeld = false;
+  player.jumpHoldTime = 0;
+  player.coyoteTimer = 0;
+  player.jumpBufferTimer = 0;
+}
+
+function snapToGrid(value) {
+  const step = editor.grid.step;
+  return Math.round(value / step) * step;
+}
+
+function snapToGridSize(value) {
+  const step = editor.grid.step;
+  const snapped = Math.round(value / step) * step;
+  return Math.max(step, snapped);
+}
+
+function snapBaseToGrid(centerZ, height, delta) {
+  const baseZ = centerZ - height * 0.5 + delta;
+  const snappedBase = snapToGrid(baseZ);
+  return snappedBase + height * 0.5;
+}
+
+function snapCenterToGrid(center, size) {
+  const half = size * 0.5;
+  const minEdge = center - half;
+  return snapToGrid(minEdge) + half;
+}
+
+function exportLevel() {
+  const platforms = colliders
+    .filter((collider) => collider.type === 'box')
+    .map((collider) => ({
+      x: collider.center.x,
+      y: collider.center.y,
+      z: collider.center.z - collider.size.z * 0.5,
+      w: collider.size.x,
+      d: collider.size.y,
+      h: collider.size.z,
+      color: collider.color,
+    }));
+
+  const data = { platforms };
+  const json = JSON.stringify(data, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'level.json';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  console.log('Level exported', data);
 }
 
 function beginDrag(x, y, id = null) {
@@ -167,6 +627,7 @@ function suppressMouse() {
 
 function handleTouchStart(event) {
   event.preventDefault();
+  if (editor.active) return;
   suppressMouse();
   refreshActiveTouches(event);
   if (touchInput.primaryId === null && event.changedTouches.length > 0) {
@@ -180,6 +641,7 @@ function handleTouchStart(event) {
 
 function handleTouchMove(event) {
   event.preventDefault();
+  if (editor.active) return;
   suppressMouse();
   refreshActiveTouches(event);
   if (touchInput.primaryId !== null) {
@@ -193,6 +655,7 @@ function handleTouchMove(event) {
 
 function handleTouchEnd(event) {
   event.preventDefault();
+  if (editor.active) return;
   suppressMouse();
   refreshActiveTouches(event);
   if (
@@ -212,31 +675,42 @@ function isMouseSuppressed() {
   return touchInput.active.size > 0 || millis() < touchInput.suppressMouseUntil;
 }
 
-function drawTouchDebug() {
+function drawTouchOverlay() {
   if (!debugLayer) return;
   debugLayer.clear();
-  debugLayer.noStroke();
-  debugLayer.textSize(12);
-  debugLayer.fill(255);
-  const count = getTouchCount();
-  debugLayer.text(`touches: ${count}`, 12, 18);
-  debugLayer.text(`primaryId: ${touchInput.primaryId}`, 12, 34);
-  debugLayer.text(`dragId: ${dragInput.pointerId}`, 12, 50);
-  debugLayer.text(
-    `dx/dy: ${dragInput.dx.toFixed(1)}, ${dragInput.dy.toFixed(1)}`,
-    12,
-    66
-  );
-  debugLayer.text(`dir: ${dragInput.hasDirection}`, 12, 82);
-  debugLayer.text(`held: ${dragInput.timeHeld.toFixed(2)}`, 12, 98);
-  debugLayer.text('mode: touch', 12, 114);
-  debugLayer.text(
-    `suppressMouse: ${Math.max(0, touchInput.suppressMouseUntil - millis()).toFixed(0)}`,
-    12,
-    130
-  );
 
-  if (dragInput.active && touchInput.primaryId !== null) {
+  if (showTouchDebug) {
+    debugLayer.noStroke();
+    debugLayer.textSize(12);
+    debugLayer.fill(255);
+    const count = getTouchCount();
+    debugLayer.text(`touches: ${count}`, 12, 18);
+    debugLayer.text(`primaryId: ${touchInput.primaryId}`, 12, 34);
+    debugLayer.text(`dragId: ${dragInput.pointerId}`, 12, 50);
+    debugLayer.text(
+      `dx/dy: ${dragInput.dx.toFixed(1)}, ${dragInput.dy.toFixed(1)}`,
+      12,
+      66
+    );
+    debugLayer.text(`dir: ${dragInput.hasDirection}`, 12, 82);
+    debugLayer.text(`held: ${dragInput.timeHeld.toFixed(2)}`, 12, 98);
+    debugLayer.text('mode: touch', 12, 114);
+    debugLayer.text(
+      `suppressMouse: ${Math.max(0, touchInput.suppressMouseUntil - millis()).toFixed(0)}`,
+      12,
+      130
+    );
+
+    for (const [id, pos] of touchInput.active.entries()) {
+      const isPrimary = id === touchInput.primaryId;
+      debugLayer.fill(isPrimary ? 255 : 0, isPrimary ? 80 : 200, 80, 200);
+      debugLayer.ellipse(pos.x, pos.y, 26, 26);
+      debugLayer.fill(0);
+      debugLayer.text(String(id), pos.x + 14, pos.y + 4);
+    }
+  }
+
+  if (showJoystick && dragInput.active && touchInput.primaryId !== null) {
     const baseRadius = 50;
     const knobRadius = 30;
     const maxDistance = dragInput.maxDistance;
@@ -250,20 +724,10 @@ function drawTouchDebug() {
     const knobY = dragInput.startY + clampY;
 
     debugLayer.noStroke();
-
     debugLayer.fill(255, 255, 255, 20);
     debugLayer.ellipse(dragInput.startX, dragInput.startY, baseRadius * 2, baseRadius * 2);
-    
     debugLayer.fill(255, 255, 255, 140);
     debugLayer.ellipse(knobX, knobY, knobRadius * 2, knobRadius * 2);
-  }
-
-  for (const [id, pos] of touchInput.active.entries()) {
-    const isPrimary = id === touchInput.primaryId;
-    debugLayer.fill(isPrimary ? 255 : 0, isPrimary ? 80 : 200, 80, 200);
-    debugLayer.ellipse(pos.x, pos.y, 26, 26);
-    debugLayer.fill(0);
-    debugLayer.text(String(id), pos.x + 14, pos.y + 4);
   }
 }
 
@@ -354,6 +818,10 @@ function updatePlayer() {
   player.pos.z += player.vel.z * dt;
 
   resolvePlayerCollisions();
+
+  if (player.pos.z <= -100) {
+    resetPlayerToSpawn();
+  }
 }
 
 function drawPlayer() {
@@ -363,9 +831,53 @@ function drawPlayer() {
   rectMode(CENTER);
 
   push();
-  translate(player.pos.x, player.pos.y, player.size * .75 + player.pos.z);
+  translate(player.pos.x, player.pos.y, player.size * 0.75 + player.pos.z);
   rotateZ(player.angle);
-  box(player.size, player.size, player.size*1.5);
+  box(player.size, player.size, player.size * 1.5);
+  pop();
+
+  const labelX = player.pos.x;
+  const labelY = player.pos.y;
+  const labelZ = player.pos.z + player.size * 1.6;
+
+  let camX;
+  let camY;
+  let camZ;
+  if (editor.active) {
+    camX = editor.camera.position.x;
+    camY = editor.camera.position.y;
+    camZ = editor.camera.position.z;
+  } else {
+    const cameraDistance = 220;
+    const cameraHeight = 120;
+    camX = player.pos.x - Math.cos(player.angle) * cameraDistance;
+    camY = player.pos.y - Math.sin(player.angle) * cameraDistance;
+    camZ = cameraHeight + player.pos.z;
+  }
+
+  const dx = camX - labelX;
+  const dy = camY - labelY;
+  const dz = camZ - labelZ;
+  const distance = Math.hypot(dx, dy, dz);
+
+  push();
+  translate(labelX, labelY, labelZ);
+  if (distance > 0.0001) {
+    const yaw = Math.atan2(dy, dx);
+    const pitch = Math.acos(clampValue(dz / distance, -1, 1));
+    rotateZ(yaw);
+    rotateY(pitch);
+    rotateZ(-Math.PI / 2);
+  }
+
+  fill(255);
+  textAlign(CENTER, CENTER);
+  textSize(12);
+  text(
+    `x:${player.pos.x.toFixed(1)} y:${player.pos.y.toFixed(1)} z:${player.pos.z.toFixed(1)}`,
+    0,
+    0
+  );
   pop();
 }
 
@@ -416,7 +928,7 @@ function drawShadow() {
     push();
     translate(surface.collider.center.x, surface.collider.center.y, surface.topZ + 0.1);
     noStroke();
-    fill(0, 140);
+    fill(0, SHADOW_ALPHA);
     beginShape();
     for (const point of shape) {
       vertex(point.x, point.y, 0);
@@ -490,12 +1002,10 @@ function drawPlatformShadows() {
       const maxY = Math.min(casterMaxY, receiverMaxY);
       if (minX >= maxX || minY >= maxY) continue;
 
-      const alpha = Math.max(20, 130 - height * 0.35);
-
       push();
       translate(0, 0, receiverTopZ + 0.06);
       noStroke();
-      fill(0, alpha);
+      fill(0, SHADOW_ALPHA);
       beginShape();
       vertex(minX, minY, 0);
       vertex(minX, maxY, 0);
@@ -508,12 +1018,14 @@ function drawPlatformShadows() {
 }
 
 function addPlatform(x, y, z, w, d, h, color) {
-  colliders.push({
+  const platform = {
     type: 'box',
     center: { x, y, z: z + h * 0.5 },
     size: { x: w, y: d, z: h },
     color,
-  });
+  };
+  colliders.push(platform);
+  return platform;
 }
 
 function clearPlatforms() {
@@ -626,6 +1138,7 @@ async function loadLevel() {
     if (!response.ok) throw new Error(`Level load failed: ${response.status}`);
     const data = await response.json();
     clearPlatforms();
+    editor.selection = null;
 
     if (Array.isArray(data.platforms)) {
       for (const platform of data.platforms) {
@@ -706,6 +1219,179 @@ function updateCamera() {
   camera(camX, camY, camZ, targetX, targetY, targetZ, 0, 0, -1);
 }
 
+function handleEditorMousePressed(event) {
+  editor.drag.active = true;
+  editor.drag.startX = mouseX;
+  editor.drag.startY = mouseY;
+
+  const rightClick = (event && event.button === 2) || mouseButton === RIGHT;
+  const middleClick = (event && event.button === 1) || mouseButton === CENTER;
+
+  if (rightClick) {
+    editor.drag.mode = 'orbit';
+    editor.drag.startYaw = editor.camera.yaw;
+    editor.drag.startPitch = editor.camera.pitch;
+    return;
+  }
+
+  if (middleClick) {
+    editor.drag.mode = 'pan';
+    editor.drag.startTarget = { ...editor.camera.target };
+    return;
+  }
+
+  const ray = getEditorRay(mouseX, mouseY);
+  if (editor.selection) {
+    const handle = pickResizeHandle(ray, editor.selection);
+    if (handle) {
+      const halfX = editor.selection.size.x * 0.5;
+      const halfY = editor.selection.size.y * 0.5;
+      editor.drag.mode = 'resize';
+      editor.drag.resizeAxis = handle.axis;
+      editor.drag.resizeSign = handle.sign;
+      editor.drag.planeZ = editor.selection.center.z;
+      editor.drag.startBounds = {
+        minX: editor.selection.center.x - halfX,
+        maxX: editor.selection.center.x + halfX,
+        minY: editor.selection.center.y - halfY,
+        maxY: editor.selection.center.y + halfY,
+      };
+      return;
+    }
+  }
+  const hit = pickPlatform(ray);
+  if (hit) {
+    editor.selection = hit.collider;
+    editor.drag.mode = 'move';
+    editor.drag.offset = {
+      x: hit.point.x - hit.collider.center.x,
+      y: hit.point.y - hit.collider.center.y,
+      z: hit.point.z - hit.collider.center.z,
+    };
+    editor.drag.planeZ = hit.collider.center.z;
+    return;
+  }
+
+  const groundHit = rayPlaneIntersection(ray, 0);
+  if (groundHit) {
+    const snappedX = snapCenterToGrid(groundHit.x, editor.defaults.w);
+    const snappedY = snapCenterToGrid(groundHit.y, editor.defaults.d);
+    const platform = addPlatform(
+      snappedX,
+      snappedY,
+      0,
+      editor.defaults.w,
+      editor.defaults.d,
+      editor.defaults.h,
+      editor.defaults.color
+    );
+    editor.selection = platform;
+    editor.drag.mode = 'move';
+    editor.drag.offset = { x: 0, y: 0, z: 0 };
+    editor.drag.planeZ = platform.center.z;
+  } else {
+    editor.drag.mode = null;
+  }
+}
+
+function handleEditorMouseDragged() {
+  if (!editor.drag.active) return;
+  const dx = mouseX - editor.drag.startX;
+  const dy = mouseY - editor.drag.startY;
+  editor.camera.position = getEditorCameraPosition();
+
+  if (editor.drag.mode === 'orbit') {
+    editor.camera.yaw = editor.drag.startYaw - dx * 0.005;
+    editor.camera.pitch = clampValue(editor.drag.startPitch - dy * 0.005, 0.2, 1.35);
+    return;
+  }
+
+  if (editor.drag.mode === 'pan') {
+    const position = editor.camera.position;
+    const target = editor.camera.target;
+    const forward = createVector(
+      target.x - position.x,
+      target.y - position.y,
+      target.z - position.z
+    ).normalize();
+    const right = p5.Vector.cross(forward, createVector(0, 0, -1)).normalize();
+    const flatForward = createVector(forward.x, forward.y, 0);
+    if (flatForward.magSq() > 0.0001) flatForward.normalize();
+    const flatRight = createVector(right.x, right.y, 0);
+    if (flatRight.magSq() > 0.0001) flatRight.normalize();
+    const scale = editor.camera.distance * 0.002;
+    editor.camera.target.x =
+      editor.drag.startTarget.x - dx * scale * flatRight.x - dy * scale * flatForward.x;
+    editor.camera.target.y =
+      editor.drag.startTarget.y - dx * scale * flatRight.y - dy * scale * flatForward.y;
+    return;
+  }
+
+  if (editor.drag.mode === 'move' && editor.selection) {
+    const ray = getEditorRay(mouseX, mouseY);
+    const hit = rayPlaneIntersection(ray, editor.drag.planeZ);
+    if (!hit) return;
+    const targetX = hit.x - editor.drag.offset.x;
+    const targetY = hit.y - editor.drag.offset.y;
+    editor.selection.center.x = snapCenterToGrid(targetX, editor.selection.size.x);
+    editor.selection.center.y = snapCenterToGrid(targetY, editor.selection.size.y);
+    return;
+  }
+
+  if (editor.drag.mode === 'resize' && editor.selection && editor.drag.startBounds) {
+    const ray = getEditorRay(mouseX, mouseY);
+    const hit = rayPlaneIntersection(ray, editor.drag.planeZ);
+    if (!hit) return;
+    const bounds = editor.drag.startBounds;
+    const minSize = editor.grid.step;
+
+    if (editor.drag.resizeAxis === 'x') {
+      if (editor.drag.resizeSign > 0) {
+        const rawWidth = hit.x - bounds.minX;
+        const width = Math.max(minSize, snapToGridSize(rawWidth));
+        const maxX = bounds.minX + width;
+        editor.selection.size.x = width;
+        editor.selection.center.x = (bounds.minX + maxX) * 0.5;
+      } else {
+        const rawWidth = bounds.maxX - hit.x;
+        const width = Math.max(minSize, snapToGridSize(rawWidth));
+        const minX = bounds.maxX - width;
+        editor.selection.size.x = width;
+        editor.selection.center.x = (minX + bounds.maxX) * 0.5;
+      }
+    } else if (editor.drag.resizeAxis === 'y') {
+      if (editor.drag.resizeSign > 0) {
+        const rawDepth = hit.y - bounds.minY;
+        const depth = Math.max(minSize, snapToGridSize(rawDepth));
+        const maxY = bounds.minY + depth;
+        editor.selection.size.y = depth;
+        editor.selection.center.y = (bounds.minY + maxY) * 0.5;
+      } else {
+        const rawDepth = bounds.maxY - hit.y;
+        const depth = Math.max(minSize, snapToGridSize(rawDepth));
+        const minY = bounds.maxY - depth;
+        editor.selection.size.y = depth;
+        editor.selection.center.y = (minY + bounds.maxY) * 0.5;
+      }
+    }
+  }
+}
+
+function handleEditorMouseReleased() {
+  editor.drag.active = false;
+  editor.drag.mode = null;
+  editor.drag.resizeAxis = null;
+  editor.drag.resizeSign = 1;
+  editor.drag.startBounds = null;
+}
+
+function deleteSelectedPlatform() {
+  if (!editor.selection) return;
+  const index = colliders.indexOf(editor.selection);
+  if (index >= 0) colliders.splice(index, 1);
+  editor.selection = null;
+}
+
 function touchStarted() {
   return false;
 }
@@ -718,7 +1404,31 @@ function touchEnded() {
   return false;
 }
 
-function mousePressed() {
+function keyPressed() {
+  if (key === 'e' || key === 'E') {
+    setEditorActive(!editor.active);
+    return false;
+  }
+  if (editor.active && (key === 'p' || key === 'P')) {
+    exportLevel();
+    return false;
+  }
+  if (editor.active && (key === 'x' || key === 'X')) {
+    deleteSelectedPlatform();
+    return false;
+  }
+  if (editor.active && (keyCode === BACKSPACE || keyCode === DELETE)) {
+    deleteSelectedPlatform();
+    return false;
+  }
+  return true;
+}
+
+function mousePressed(event) {
+  if (editor.active) {
+    handleEditorMousePressed(event);
+    return false;
+  }
   if (isMouseSuppressed()) {
     return false;
   }
@@ -727,6 +1437,10 @@ function mousePressed() {
 }
 
 function mouseDragged() {
+  if (editor.active) {
+    handleEditorMouseDragged();
+    return false;
+  }
   if (isMouseSuppressed()) {
     return false;
   }
@@ -735,9 +1449,44 @@ function mouseDragged() {
 }
 
 function mouseReleased() {
+  if (editor.active) {
+    handleEditorMouseReleased();
+    return false;
+  }
   if (isMouseSuppressed()) {
     return false;
   }
   endDrag();
+  return false;
+}
+
+function mouseWheel(event) {
+  if (!editor.active) return false;
+  if (editor.selection && event.shiftKey) {
+    const delta = -event.deltaY * 0.2;
+    const minZ = editor.selection.size.z * 0.5;
+    const snapped = snapBaseToGrid(editor.selection.center.z, editor.selection.size.z, delta);
+    editor.selection.center.z = Math.max(minZ, snapped);
+    return false;
+  }
+  if (editor.selection && event.altKey) {
+    const delta = -event.deltaY * 0.2;
+    const baseZ = editor.selection.center.z - editor.selection.size.z * 0.5;
+    const nextHeight = snapToGridSize(editor.selection.size.z + delta);
+    editor.selection.size.z = nextHeight;
+    editor.selection.center.z = baseZ + nextHeight * 0.5;
+    return false;
+  }
+  if (editor.selection && (event.ctrlKey || event.metaKey)) {
+    const delta = -event.deltaY * 0.2;
+    const next = snapToGridSize(editor.selection.size.x + delta);
+    editor.selection.size.x = next;
+    editor.selection.size.y = next;
+    editor.selection.center.x = snapCenterToGrid(editor.selection.center.x, next);
+    editor.selection.center.y = snapCenterToGrid(editor.selection.center.y, next);
+    return false;
+  }
+
+  editor.camera.distance = clampValue(editor.camera.distance + event.deltaY, 140, 2400);
   return false;
 }
