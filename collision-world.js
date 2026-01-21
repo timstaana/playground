@@ -68,6 +68,7 @@ class CollisionWorld {
       y: playerInstance.pos.y * scale,
       z: playerInstance.pos.z * scale + halfZ,
     };
+    const maxRampSlope = playerInstance.maxRampSlope ?? Infinity;
 
     const stepHeight = (playerInstance.stepHeight ?? 0) * scale;
     const tryStepUp = (bounds) => {
@@ -84,7 +85,9 @@ class CollisionWorld {
     };
 
     this.forEachPlatform((collider, bounds) => {
-      if (collider.type === 'ramp') return;
+      if (collider.type === 'ramp') {
+        if (CollisionWorld.getRampSlope(collider) <= maxRampSlope) return;
+      }
       const dx = center.x - collider.center.x;
       const dy = center.y - collider.center.y;
       const dz = center.z - collider.center.z;
@@ -117,6 +120,7 @@ class CollisionWorld {
     let rampZ = null;
     this.forEachPlatform((collider, bounds) => {
       if (collider.type !== 'ramp') return;
+      if (CollisionWorld.getRampSlope(collider) > maxRampSlope) return;
       const withinX = Math.abs(center.x - collider.center.x) <= bounds.half.x + halfX;
       const withinY = Math.abs(center.y - collider.center.y) <= bounds.half.y + halfY;
       if (!withinX || !withinY) return;
@@ -175,9 +179,18 @@ class CollisionWorld {
     return surfaces;
   }
 
-  drawPlatforms() {
+  drawPlatforms(options = {}) {
+    const occluderAlpha = options.occluderAlpha ?? 140;
+    let occluders = null;
+    if (options.occluders instanceof Set) {
+      occluders = options.occluders;
+    } else if (Array.isArray(options.occluders)) {
+      occluders = new Set(options.occluders);
+    }
+
     this.forEachPlatform((platform) => {
-      platform.draw();
+      const alphaOverride = occluders?.has(platform) ? occluderAlpha : null;
+      platform.draw(alphaOverride);
     });
   }
 
@@ -244,6 +257,13 @@ class CollisionWorld {
     const t = dir > 0 ? (local + halfX) / ramp.size.x : (halfX - local) / ramp.size.x;
     const clamped = Math.min(1, Math.max(0, t));
     return baseZ + clamped * ramp.size.z;
+  }
+
+  static getRampSlope(ramp) {
+    const run = ramp.axis === 'y' ? ramp.size.y : ramp.size.x;
+    const denom = Math.abs(run);
+    if (denom <= 0.0001) return Infinity;
+    return Math.abs(ramp.size.z) / denom;
   }
 
   static rayAabbIntersection(ray, min, max) {

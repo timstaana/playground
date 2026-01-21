@@ -16,6 +16,22 @@ const shadowRenderer = {
     );
     if (surfaces.length === 0) return;
 
+    const sameLevelEpsilon = 0.5;
+    const heightEpsilon = 0.01;
+    const platformOrder = new Map();
+    if (Array.isArray(world.platforms)) {
+      for (let i = 0; i < world.platforms.length; i += 1) {
+        platformOrder.set(world.platforms[i], i);
+      }
+    }
+    const getPriority = (collider, halfX, halfY) => {
+      const containsPlayer =
+        Math.abs(playerWorld.x - collider.center.x) <= halfX &&
+        Math.abs(playerWorld.y - collider.center.y) <= halfY;
+      const order = platformOrder.get(collider) ?? 0;
+      return (containsPlayer ? 100000 : 0) + order;
+    };
+
     for (const surface of surfaces) {
       const collider = surface.collider;
       const radius = surface.radius;
@@ -23,6 +39,7 @@ const shadowRenderer = {
       const localY = playerWorld.y - collider.center.y;
       const halfX = collider.size.x * 0.5;
       const halfY = collider.size.y * 0.5;
+      const surfacePriority = getPriority(collider, halfX, halfY);
       const shape = clipCircleToRect(localX, localY, radius, halfX, halfY);
       if (shape.length < 3) continue;
 
@@ -31,7 +48,18 @@ const shadowRenderer = {
         if (other === collider) return;
 
         const otherTopZ = otherBounds.topZ;
-        if (otherTopZ <= surface.topZ + 0.01) return;
+        const heightDelta = otherTopZ - surface.topZ;
+        const isAbove = heightDelta > heightEpsilon;
+        if (!isAbove) {
+          const isSameLevel = Math.abs(heightDelta) <= sameLevelEpsilon;
+          if (!isSameLevel) return;
+          const otherPriority = getPriority(
+            other,
+            otherBounds.half.x,
+            otherBounds.half.y
+          );
+          if (otherPriority <= surfacePriority) return;
+        }
         if (otherTopZ > playerBottomZ + 0.1) return;
 
         if (

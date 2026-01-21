@@ -10,6 +10,7 @@ class Player {
     this.height = options.height ?? this.size * 1.5;
     this.stepHeight = options.stepHeight ?? 0.5;
     this.jumpHeight = options.jumpHeight ?? 1.5;
+    this.maxRampSlope = options.maxRampSlope ?? 1;
     this.speed = 5.5;
     this.turnSpeed = 2.6;
     this.angle = 0;

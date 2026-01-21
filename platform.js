@@ -49,23 +49,26 @@ class Platform {
     return data;
   }
 
-  draw() {
+  draw(alphaOverride = null) {
+    const alpha = typeof alphaOverride === 'number' ? alphaOverride : 255;
+    const strokeAlpha =
+      typeof alphaOverride === 'number' ? Math.min(180, alphaOverride) : 180;
     push();
     if (this.color) {
-      fill(this.color[0], this.color[1], this.color[2]);
+      fill(this.color[0], this.color[1], this.color[2], alpha);
     } else {
-      fill(60);
+      fill(60, alpha);
     }
     translate(this.center.x, this.center.y, this.center.z);
     if (this.type === 'ramp') {
       this.drawRamp();
       noFill();
-      stroke(220, 180);
+      stroke(220, strokeAlpha);
       this.drawRamp();
     } else {
       box(this.size.x, this.size.y, this.size.z);
       noFill();
-      stroke(220, 180);
+      stroke(220, strokeAlpha);
       box(this.size.x, this.size.y, this.size.z);
     }
     pop();
