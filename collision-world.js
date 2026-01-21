@@ -10,6 +10,16 @@ class CollisionWorld {
     return platform;
   }
 
+  addRamp(x, y, z, w, d, h, axis, dir, color) {
+    const platform = new Platform(x, y, z, w, d, h, color, {
+      type: 'ramp',
+      axis,
+      dir,
+    });
+    this.platforms.push(platform);
+    return platform;
+  }
+
   clearPlatforms() {
     this.platforms.length = 0;
   }
@@ -21,7 +31,6 @@ class CollisionWorld {
 
   forEachPlatform(callback) {
     for (const platform of this.platforms) {
-      if (platform.type !== 'box') continue;
       callback(platform, platform.getBounds());
     }
   }
@@ -60,7 +69,22 @@ class CollisionWorld {
       z: playerInstance.pos.z * scale + halfZ,
     };
 
+    const stepHeight = (playerInstance.stepHeight ?? 0) * scale;
+    const tryStepUp = (bounds) => {
+      if (stepHeight <= 0) return false;
+      if (playerInstance.vel.z > 0) return false;
+      const playerBottom = center.z - halfZ;
+      if (playerBottom > bounds.topZ) return false;
+      const delta = bounds.topZ - playerBottom;
+      if (delta < 0 || delta > stepHeight) return false;
+      center.z = bounds.topZ + halfZ;
+      playerInstance.onGround = true;
+      if (playerInstance.vel.z < 0) playerInstance.vel.z = 0;
+      return true;
+    };
+
     this.forEachPlatform((collider, bounds) => {
+      if (collider.type === 'ramp') return;
       const dx = center.x - collider.center.x;
       const dy = center.y - collider.center.y;
       const dz = center.z - collider.center.z;
@@ -71,9 +95,11 @@ class CollisionWorld {
       if (overlapX <= 0 || overlapY <= 0 || overlapZ <= 0) return;
 
       if (overlapX < overlapY && overlapX < overlapZ) {
+        if (tryStepUp(bounds)) return;
         const sign = Math.sign(dx) || 1;
         center.x += sign * overlapX;
       } else if (overlapY < overlapZ) {
+        if (tryStepUp(bounds)) return;
         const sign = Math.sign(dy) || 1;
         center.y += sign * overlapY;
       } else {
@@ -88,6 +114,26 @@ class CollisionWorld {
       }
     });
 
+    let rampZ = null;
+    this.forEachPlatform((collider, bounds) => {
+      if (collider.type !== 'ramp') return;
+      const withinX = Math.abs(center.x - collider.center.x) <= bounds.half.x + halfX;
+      const withinY = Math.abs(center.y - collider.center.y) <= bounds.half.y + halfY;
+      if (!withinX || !withinY) return;
+      const surfaceZ = CollisionWorld.getRampSurfaceZ(collider, center.x, center.y);
+      if (surfaceZ === null) return;
+      if (rampZ === null || surfaceZ > rampZ) rampZ = surfaceZ;
+    });
+
+    if (rampZ !== null) {
+      const playerBottomZ = center.z - halfZ;
+      if (playerBottomZ <= rampZ + 0.01 && center.z >= rampZ) {
+        center.z = rampZ + halfZ;
+        playerInstance.onGround = true;
+        if (playerInstance.vel.z < 0) playerInstance.vel.z = 0;
+      }
+    }
+
     playerInstance.pos.x = center.x / scale;
     playerInstance.pos.y = center.y / scale;
     playerInstance.pos.z = (center.z - halfZ) / scale;
@@ -98,7 +144,10 @@ class CollisionWorld {
     const surfaces = [];
 
     this.forEachPlatform((collider, bounds) => {
-      const topZ = bounds.topZ;
+      const topZ =
+        collider.type === 'ramp'
+          ? CollisionWorld.getRampSurfaceZ(collider, x, y)
+          : bounds.topZ;
 
       if (topZ > playerBottomZ + 0.1) return;
 
@@ -175,6 +224,26 @@ class CollisionWorld {
     const dx = Math.max(Math.abs(cx - rectCenter.x) - halfX, 0);
     const dy = Math.max(Math.abs(cy - rectCenter.y) - halfY, 0);
     return dx * dx + dy * dy <= r * r;
+  }
+
+  static getRampSurfaceZ(ramp, x, y) {
+    const halfX = ramp.size.x * 0.5;
+    const halfY = ramp.size.y * 0.5;
+    const halfZ = ramp.size.z * 0.5;
+    const baseZ = ramp.center.z - halfZ;
+    const dir = ramp.dir >= 0 ? 1 : -1;
+
+    if (ramp.axis === 'y') {
+      const local = y - ramp.center.y;
+      const t = dir > 0 ? (local + halfY) / ramp.size.y : (halfY - local) / ramp.size.y;
+      const clamped = Math.min(1, Math.max(0, t));
+      return baseZ + clamped * ramp.size.z;
+    }
+
+    const local = x - ramp.center.x;
+    const t = dir > 0 ? (local + halfX) / ramp.size.x : (halfX - local) / ramp.size.x;
+    const clamped = Math.min(1, Math.max(0, t));
+    return baseZ + clamped * ramp.size.z;
   }
 
   static rayAabbIntersection(ray, min, max) {

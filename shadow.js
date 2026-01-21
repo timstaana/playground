@@ -17,17 +17,18 @@ const shadowRenderer = {
     if (surfaces.length === 0) return;
 
     for (const surface of surfaces) {
+      const collider = surface.collider;
       const radius = surface.radius;
-      const localX = playerWorld.x - surface.collider.center.x;
-      const localY = playerWorld.y - surface.collider.center.y;
-      const halfX = surface.collider.size.x * 0.5;
-      const halfY = surface.collider.size.y * 0.5;
+      const localX = playerWorld.x - collider.center.x;
+      const localY = playerWorld.y - collider.center.y;
+      const halfX = collider.size.x * 0.5;
+      const halfY = collider.size.y * 0.5;
       const shape = clipCircleToRect(localX, localY, radius, halfX, halfY);
       if (shape.length < 3) continue;
 
       const occluderShapes = [];
       world.forEachPlatform((other, otherBounds) => {
-        if (other === surface.collider) return;
+        if (other === collider) return;
 
         const otherTopZ = otherBounds.topZ;
         if (otherTopZ <= surface.topZ + 0.01) return;
@@ -46,8 +47,8 @@ const shadowRenderer = {
           return;
         }
 
-        const offsetX = other.center.x - surface.collider.center.x;
-        const offsetY = other.center.y - surface.collider.center.y;
+        const offsetX = other.center.x - collider.center.x;
+        const offsetY = other.center.y - collider.center.y;
         const occluderLocal = clipCircleToRect(
           localX - offsetX,
           localY - offsetY,
@@ -61,13 +62,24 @@ const shadowRenderer = {
         );
       });
 
+      const isRamp = collider.type === 'ramp';
+      const zOffset = 0.1;
+      const baseZ = surface.topZ - collider.center.z + zOffset;
+      const getLocalZ = (point) => {
+        if (!isRamp) return baseZ;
+        const worldX = collider.center.x + point.x;
+        const worldY = collider.center.y + point.y;
+        const worldZ = CollisionWorld.getRampSurfaceZ(collider, worldX, worldY);
+        return worldZ - collider.center.z + zOffset;
+      };
+
       push();
-      translate(surface.collider.center.x, surface.collider.center.y, surface.topZ + 0.1);
+      translate(collider.center.x, collider.center.y, collider.center.z);
       noStroke();
       fill(0, shadowAlpha);
       beginShape();
       for (const point of shape) {
-        vertex(point.x, point.y, 0);
+        vertex(point.x, point.y, getLocalZ(point));
       }
       const shapeArea = polygonArea(shape);
       for (let i = 0; i < occluderShapes.length; i += 1) {
@@ -77,7 +89,7 @@ const shadowRenderer = {
         }
         beginContour();
         for (const point of occluderPoints) {
-          vertex(point.x, point.y, 0);
+          vertex(point.x, point.y, getLocalZ(point));
         }
         endContour();
       }

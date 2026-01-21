@@ -21,6 +21,9 @@ const editor = {
     w: 3 * UNIT,
     d: 3 * UNIT,
     h: UNIT,
+    type: 'box',
+    axis: 'x',
+    dir: 1,
     color: [90, 70, 40],
   },
   camera: {
@@ -332,6 +335,7 @@ function drawEditorOverlay() {
     'Right drag orbit, middle drag pan',
     'Wheel zoom, Shift+wheel move Z, Alt+wheel height',
     'Ctrl/Cmd+wheel footprint size',
+    'R toggle ramp, T axis, F flip slope',
     'Delete/Backspace or X removes selected',
     'Press P to export level.json',
   ];
@@ -407,15 +411,30 @@ async function loadLevel() {
 
     if (Array.isArray(data.platforms)) {
       for (const platform of data.platforms) {
-        world.addPlatform(
-          platform.x || 0,
-          platform.y || 0,
-          platform.z || 0,
-          platform.w || UNIT,
-          platform.d || UNIT,
-          platform.h || UNIT * 0.5,
-          platform.color
-        );
+        const type = platform.type || 'box';
+        if (type === 'ramp') {
+          world.addRamp(
+            platform.x || 0,
+            platform.y || 0,
+            platform.z || 0,
+            platform.w || UNIT,
+            platform.d || UNIT,
+            platform.h || UNIT * 0.5,
+            platform.axis || 'x',
+            platform.dir ?? 1,
+            platform.color
+          );
+        } else {
+          world.addPlatform(
+            platform.x || 0,
+            platform.y || 0,
+            platform.z || 0,
+            platform.w || UNIT,
+            platform.d || UNIT,
+            platform.h || UNIT * 0.5,
+            platform.color
+          );
+        }
       }
     }
   } catch (error) {
@@ -481,15 +500,28 @@ function handleEditorMousePressed(event) {
   if (groundHit) {
     const snappedX = snapCenterToGrid(groundHit.x, editor.defaults.w);
     const snappedY = snapCenterToGrid(groundHit.y, editor.defaults.d);
-    const platform = world.addPlatform(
-      snappedX,
-      snappedY,
-      0,
-      editor.defaults.w,
-      editor.defaults.d,
-      editor.defaults.h,
-      editor.defaults.color
-    );
+    const platform =
+      editor.defaults.type === 'ramp'
+        ? world.addRamp(
+            snappedX,
+            snappedY,
+            0,
+            editor.defaults.w,
+            editor.defaults.d,
+            editor.defaults.h,
+            editor.defaults.axis,
+            editor.defaults.dir,
+            editor.defaults.color
+          )
+        : world.addPlatform(
+            snappedX,
+            snappedY,
+            0,
+            editor.defaults.w,
+            editor.defaults.d,
+            editor.defaults.h,
+            editor.defaults.color
+          );
     editor.selection = platform;
     editor.drag.mode = 'move';
     editor.drag.offset = { x: 0, y: 0, z: 0 };
@@ -596,7 +628,51 @@ function deleteSelectedPlatform() {
   editor.selection = null;
 }
 
+function toggleRampType() {
+  if (editor.selection) {
+    editor.selection.type = editor.selection.type === 'ramp' ? 'box' : 'ramp';
+    if (editor.selection.type === 'ramp') {
+      editor.selection.axis = editor.selection.axis || editor.defaults.axis;
+      editor.selection.dir = editor.selection.dir || editor.defaults.dir;
+    }
+    return;
+  }
+  editor.defaults.type = editor.defaults.type === 'ramp' ? 'box' : 'ramp';
+}
+
+function toggleRampAxis() {
+  if (editor.selection && editor.selection.type === 'ramp') {
+    editor.selection.axis = editor.selection.axis === 'y' ? 'x' : 'y';
+    return;
+  }
+  if (editor.defaults.type === 'ramp') {
+    editor.defaults.axis = editor.defaults.axis === 'y' ? 'x' : 'y';
+  }
+}
+
+function flipRampDirection() {
+  if (editor.selection && editor.selection.type === 'ramp') {
+    editor.selection.dir *= -1;
+    return;
+  }
+  if (editor.defaults.type === 'ramp') {
+    editor.defaults.dir *= -1;
+  }
+}
+
 function keyPressed() {
+  if (key === 'r' || key === 'R') {
+    toggleRampType();
+    return false;
+  }
+  if (key === 't' || key === 'T') {
+    toggleRampAxis();
+    return false;
+  }
+  if (key === 'f' || key === 'F') {
+    flipRampDirection();
+    return false;
+  }
   if (key === 'p' || key === 'P') {
     exportLevel();
     return false;

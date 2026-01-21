@@ -88,15 +88,30 @@ async function loadLevel() {
 
     if (Array.isArray(data.platforms)) {
       for (const platform of data.platforms) {
-        world.addPlatform(
-          platform.x || 0,
-          platform.y || 0,
-          platform.z || 0,
-          platform.w || UNIT,
-          platform.d || UNIT,
-          platform.h || UNIT * 0.5,
-          platform.color
-        );
+        const type = platform.type || 'box';
+        if (type === 'ramp') {
+          world.addRamp(
+            platform.x || 0,
+            platform.y || 0,
+            platform.z || 0,
+            platform.w || UNIT,
+            platform.d || UNIT,
+            platform.h || UNIT * 0.5,
+            platform.axis || 'x',
+            platform.dir ?? 1,
+            platform.color
+          );
+        } else {
+          world.addPlatform(
+            platform.x || 0,
+            platform.y || 0,
+            platform.z || 0,
+            platform.w || UNIT,
+            platform.d || UNIT,
+            platform.h || UNIT * 0.5,
+            platform.color
+          );
+        }
       }
     }
   } catch (error) {

@@ -8,6 +8,7 @@ class Player {
     this.vel = { z: 0 };
     this.size = options.size ?? 1;
     this.height = options.height ?? this.size * 1.5;
+    this.stepHeight = options.stepHeight ?? 0.5;
     this.jumpHeight = options.jumpHeight ?? 1.5;
     this.speed = 5.5;
     this.turnSpeed = 2.6;
